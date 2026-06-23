@@ -1,0 +1,654 @@
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Button,
+  Alert,
+  Box,
+  Breadcrumbs,
+  CircularProgress,
+  Paper,
+  Stack,
+  Tab,
+  Tabs,
+  Typography,
+} from '@mui/material';
+import { Upload } from '@mui/icons-material';
+import { GridColDef } from '@mui/x-data-grid';
+import { useNavigate, useParams } from 'react-router-dom';
+
+import { purchaseOrderService } from '@/api/services/purchaseOrderService';
+import { LineItem, PurchaseOrder } from '@/models';
+import { useAuth } from '@/hooks/useAuth';
+import { userService } from '@/api/services/userService';
+import {
+  ProposeChangeDialog,
+  RaiseConcessionDialog,
+  SimpleInfoDialog,
+  SplitDialog,
+  MoveDateDialog,
+  UploadDocumentDialog,
+} from '@/components/purchaseOrderDetails';
+import { buildLineColumns, buildSupplierLineColumns } from './purchaseOrderDetails/gridColumns';
+import DocumentsTab from './purchaseOrderDetails/DocumentsTab';
+import HeaderCard from './purchaseOrderDetails/HeaderCard';
+import HistoryTab from './purchaseOrderDetails/HistoryTab';
+import LineItemsTab from './purchaseOrderDetails/LineItemsTab';
+import OverviewTab from './purchaseOrderDetails/OverviewTab';
+import ActionsMenu from './purchaseOrderDetails/ActionsMenu';
+import { DialogType, DocsRow, HistoryRow } from './purchaseOrderDetails/types';
+import { formatLineId, getTabs, isSupplierRole } from './purchaseOrderDetails/utils';
+
+const PurchaseOrderDetails: React.FC = () => {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const role = user?.role || '';
+  const supplier = isSupplierRole(role);
+
+  const [po, setPo] = useState<PurchaseOrder | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [activeTab, setActiveTab] = useState(0);
+
+  const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
+  const [documentsRows, setDocumentsRows] = useState<DocsRow[]>([]);
+
+  const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null);
+  const [selectedLine, setSelectedLine] = useState<LineItem | null>(null);
+  const [selectedLineIds, setSelectedLineIds] = useState<string[]>([]);
+  const [selectedDocument, setSelectedDocument] = useState<DocsRow | null>(null);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
+  const [pinnedLineIds, setPinnedLineIds] = useState<string[]>([]);
+  const [linePinFilter, setLinePinFilter] = useState<'all' | 'pinned'>('all');
+  const [lineSearchQuery] = useState('');
+
+  const [activeDialog, setActiveDialog] = useState<DialogType>('NONE');
+
+  const [dialogNote, setDialogNote] = useState('');
+  const [dialogDate, setDialogDate] = useState('');
+  const [splitRows, setSplitRows] = useState<Array<{ quantity: string; delivery_date: string }>>([
+    { quantity: '', delivery_date: '' },
+  ]);
+
+  const [proposeQuantity, setProposeQuantity] = useState('');
+  const [proposeUnitPrice, setProposeUnitPrice] = useState('');
+  const [proposeDeliveryDate, setProposeDeliveryDate] = useState('');
+  const [concessionDescription, setConcessionDescription] = useState('');
+  const [concessionDocumentId, setConcessionDocumentId] = useState('');
+  const [documentActionMode, setDocumentActionMode] = useState<'UPLOAD' | 'REPLACE'>('UPLOAD');
+
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadComments, setUploadComments] = useState('');
+
+  const tabs = getTabs(user?.role);
+
+  const reloadPo = useCallback(async () => {
+    if (!id) return;
+    const data = await purchaseOrderService.getPOById(id);
+    setPo(data);
+  }, [id]);
+
+  const reloadHistory = useCallback(async () => {
+    if (!id) return;
+    const rows = (await purchaseOrderService.getPOHistory(id)) as HistoryRow[];
+    setHistoryRows(rows || []);
+  }, [id]);
+
+  const reloadDocuments = useCallback(async () => {
+    if (!id) return;
+    const rows = (await purchaseOrderService.getPODocuments(id)) as DocsRow[];
+    setDocumentsRows(rows || []);
+  }, [id]);
+
+  const reloadAll = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await Promise.all([reloadPo(), reloadHistory(), reloadDocuments()]);
+      if (user?.id) {
+        const pinned = await userService.getLinePinnedRows(user.id);
+        setPinnedLineIds(pinned);
+      }
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || 'Failed to load PO details');
+    } finally {
+      setLoading(false);
+    }
+  }, [reloadPo, reloadHistory, reloadDocuments, user?.id]);
+
+  useEffect(() => {
+    void reloadAll();
+  }, [reloadAll]);
+
+  const lineItems = po?.line_items || [];
+  const hasSelectedLineActionTarget = selectedLineIds.length > 0 || Boolean(selectedLine);
+
+  const closeDialog = () => {
+    setActiveDialog('NONE');
+    setDialogNote('');
+    setDialogDate('');
+    setSplitRows([{ quantity: '', delivery_date: '' }]);
+    setProposeQuantity('');
+    setProposeUnitPrice('');
+    setProposeDeliveryDate('');
+    setConcessionDescription('');
+    setConcessionDocumentId('');
+    setSelectedDocument(null);
+    setDocumentActionMode('UPLOAD');
+    setUploadFile(null);
+    setUploadComments('');
+  };
+
+  const openMenu = (event: React.MouseEvent<HTMLElement>, line: LineItem) => {
+    setSelectedLine(line);
+    setMenuAnchorEl(event.currentTarget);
+  };
+
+  const resolvePrimaryLine = () => {
+    if (selectedLine) return selectedLine;
+    const selectedLineId = selectedLineIds[0];
+    return selectedLineId ? lineItems.find((line) => formatLineId(line) === selectedLineId) || null : null;
+  };
+
+  const closeMenu = () => {
+    setMenuAnchorEl(null);
+  };
+
+  const openDialogForAction = (action: string) => {
+    const normalized = action.toUpperCase();
+    const primaryLine = resolvePrimaryLine();
+    if (normalized === 'PROPOSE_CHANGE') {
+      setSelectedLine(primaryLine);
+      setProposeQuantity(String(primaryLine?.quantity || ''));
+      setProposeUnitPrice(String(primaryLine?.unit_price || ''));
+      setProposeDeliveryDate(String(primaryLine?.required_in_house_date || primaryLine?.shipment_date || ''));
+      setDialogNote('');
+      return setActiveDialog('PROPOSE_CHANGE');
+    }
+    if (normalized === 'RAISE_CONCESSION') {
+      setSelectedLine(primaryLine);
+      setConcessionDescription('');
+      setDialogNote('');
+      setConcessionDocumentId(documentsRows[0]?.id || '');
+      return setActiveDialog('RAISE_CONCESSION');
+    }
+    if (normalized === 'HOLD' || normalized === 'ACCEPT' || normalized === 'ACKNOWLEDGE') {
+      setSelectedLine(primaryLine);
+      setDialogNote('');
+      return setActiveDialog(normalized as DialogType);
+    }
+    if (normalized === 'MOVE_IN') {
+      setSelectedLine(primaryLine);
+      return setActiveDialog('MOVE_IN');
+    }
+    if (normalized === 'MOVE_OUT') {
+      setSelectedLine(primaryLine);
+      return setActiveDialog('MOVE_OUT');
+    }
+    if (normalized === 'SPLIT') {
+      setSelectedLine(primaryLine);
+      return setActiveDialog('SPLIT');
+    }
+    if (normalized === 'REJECT') {
+      setSelectedLine(primaryLine);
+      return setActiveDialog('REJECT');
+    }
+    if (normalized === 'NEED_MORE_INFORMATION') {
+      setSelectedLine(primaryLine);
+      return setActiveDialog('NEED_MORE_INFORMATION');
+    }
+    if (normalized === 'UPLOAD_DOCUMENT') {
+      setSelectedLine(primaryLine);
+      return setActiveDialog('UPLOAD_DOCUMENT');
+    }
+    setActiveDialog('NONE');
+  };
+
+  const openDocumentReviewDialog = (document: DocsRow, action: 'ACCEPT' | 'REJECT' | 'NEED_MORE_INFORMATION') => {
+    setSelectedDocument(document);
+    setDialogNote('');
+    setActiveDialog(action);
+  };
+
+  const openDocumentReplaceDialog = (document?: DocsRow) => {
+    setSelectedDocument(document || null);
+    setDocumentActionMode(document ? 'REPLACE' : 'UPLOAD');
+    setDialogNote('');
+    setUploadFile(null);
+    setUploadComments('');
+    setActiveDialog('UPLOAD_DOCUMENT');
+  };
+
+  const executeAction = async (action: string, payload?: Record<string, unknown>, lineIds?: string[]) => {
+    const resolvedLineIds = lineIds && lineIds.length > 0
+      ? lineIds
+      : selectedLine
+        ? [formatLineId(selectedLine)]
+        : [];
+
+    if (!id || resolvedLineIds.length === 0) return;
+
+    const line_item_id = resolvedLineIds[0];
+    const req = {
+      action,
+      line_item_id,
+      line_item_ids: resolvedLineIds,
+      ...(payload || {}),
+    };
+
+    await purchaseOrderService.performPOAction(id, req as any);
+    await Promise.all([reloadPo(), reloadHistory()]);
+  };
+
+  const submitMove = async (kind: 'MOVE_IN' | 'MOVE_OUT') => {
+    try {
+      setError(null);
+      const payload: Record<string, unknown> = { notes: dialogNote };
+      if (kind === 'MOVE_IN') payload.move_in_date = dialogDate;
+      if (kind === 'MOVE_OUT') payload.move_out_date = dialogDate;
+      await executeAction(kind, payload);
+      closeDialog();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || `Failed to submit ${kind}`);
+    }
+  };
+
+  const submitSplit = async () => {
+    try {
+      setError(null);
+      const splits = splitRows
+        .filter((r) => r.quantity && r.delivery_date)
+        .map((r) => ({ quantity: Number(r.quantity), delivery_date: r.delivery_date }));
+      await executeAction('SPLIT', { notes: dialogNote, splits });
+      closeDialog();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || 'Failed to submit split request');
+    }
+  };
+
+  const submitSimpleAction = async (action: 'REJECT' | 'NEED_MORE_INFORMATION' | 'PROPOSE_CHANGE' | 'RAISE_CONCESSION') => {
+    try {
+      setError(null);
+      const selectedIds = selectedLineIds.length > 0 ? selectedLineIds : selectedLine ? [formatLineId(selectedLine)] : [];
+      const payload: Record<string, unknown> = { notes: dialogNote };
+      if (action === 'PROPOSE_CHANGE') {
+        payload.proposed_quantity = proposeQuantity ? Number(proposeQuantity) : null;
+        payload.proposed_unit_price = proposeUnitPrice ? Number(proposeUnitPrice) : null;
+        payload.proposed_delivery_date = proposeDeliveryDate || null;
+      }
+      if (action === 'RAISE_CONCESSION') {
+        payload.concession_reason = dialogNote || '';
+        payload.concession_description = concessionDescription || '';
+        payload.document_id = concessionDocumentId || undefined;
+      }
+      await executeAction(action, payload, selectedIds);
+      closeDialog();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || `Failed to submit ${action}`);
+    }
+  };
+
+  const submitSimpleLineAction = async (action: 'HOLD' | 'ACCEPT' | 'ACKNOWLEDGE' | 'REJECT' | 'NEED_MORE_INFORMATION') => {
+    try {
+      setError(null);
+      if (selectedDocument && (action === 'ACCEPT' || action === 'REJECT' || action === 'NEED_MORE_INFORMATION')) {
+        await submitDocumentReview(action);
+        return;
+      }
+      const selectedIds = selectedLineIds.length > 0 ? selectedLineIds : selectedLine ? [formatLineId(selectedLine)] : [];
+      await executeAction(action, { notes: dialogNote, document_id: concessionDocumentId || undefined }, selectedIds);
+      closeDialog();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || `Failed to submit ${action}`);
+    }
+  };
+
+  const submitDocumentReview = async (action: 'ACCEPT' | 'REJECT' | 'NEED_MORE_INFORMATION') => {
+    if (!id || !selectedDocument) return;
+    try {
+      setError(null);
+      await purchaseOrderService.performPODocumentAction(id, selectedDocument.id, { action, notes: dialogNote });
+      await reloadDocuments();
+      closeDialog();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || `Failed to submit document ${action}`);
+    }
+  };
+
+  const submitDocumentUploadOrReplace = async () => {
+    if (!id || !uploadFile) {
+      setError('Please select a file before upload');
+      return;
+    }
+
+    try {
+      setError(null);
+      if (documentActionMode === 'REPLACE' && selectedDocument) {
+        await purchaseOrderService.replacePODocument(id, selectedDocument.id, {
+          file: uploadFile,
+          comments: uploadComments,
+        });
+      } else {
+        const resolvedLineIds = selectedLineIds.length > 0 ? selectedLineIds : selectedLine ? [formatLineId(selectedLine)] : [];
+        if (resolvedLineIds.length === 0) {
+          setError('Please select a line item before upload');
+          return;
+        }
+        await Promise.all(
+          resolvedLineIds.map((lineId) =>
+            purchaseOrderService.uploadPODocument(id, {
+              line_item_id: lineId,
+              file: uploadFile,
+              comments: uploadComments,
+            })
+          )
+        );
+      }
+      await reloadDocuments();
+      closeDialog();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || 'Failed to save document');
+    }
+  };
+
+  const downloadDocument = async (documentId: string, fallbackName?: string) => {
+    if (!id || !documentId) return;
+    try {
+      setError(null);
+      const { blob, fileName } = await purchaseOrderService.downloadPODocument(id, documentId);
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = fileName || fallbackName || 'document';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || 'Failed to download document');
+    }
+  };
+
+  const toggleLinePin = useCallback((lineId: string) => {
+    setPinnedLineIds((prev) => {
+      const next = prev.includes(lineId)
+        ? prev.filter((id) => id !== lineId)
+        : [...prev, lineId];
+
+      if (user?.id) {
+        void userService.updateLinePinnedRows(user.id, next);
+      }
+
+      return next;
+    });
+  }, [user?.id]);
+
+  const displayedLineItems = useMemo(
+    () =>
+      lineItems.filter((line) => {
+        const lineId = formatLineId(line);
+        const matchesPin = linePinFilter === 'pinned' ? pinnedLineIds.includes(lineId) : true;
+        const searchable = `${lineId} ${line.material_code || ''} ${line.description || ''}`.toLowerCase();
+        const matchesSearch = !lineSearchQuery.trim() || searchable.includes(lineSearchQuery.trim().toLowerCase());
+        return matchesPin && matchesSearch;
+      }),
+    [lineItems, linePinFilter, pinnedLineIds, lineSearchQuery]
+  );
+
+  const lineColumns: GridColDef[] = useMemo(
+    () => buildLineColumns({ pinnedLineIds, toggleLinePin, openMenu }),
+    [pinnedLineIds, toggleLinePin]
+  );
+
+  const supplierLineColumns: GridColDef[] = useMemo(() => buildSupplierLineColumns(lineColumns), [lineColumns]);
+
+  if (loading) {
+    return (
+      <Box sx={{ p: 3 }}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <CircularProgress size={20} />
+          <Typography variant="body2">Loading purchase order details...</Typography>
+        </Stack>
+      </Box>
+    );
+  }
+
+  if (!po) {
+    return (
+      <Box sx={{ p: 3 }}>
+        <Alert severity="error">{error || 'Purchase order not found'}</Alert>
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={{ p: 2, minHeight: '100%', backgroundColor: '#ffffff' }}>
+      <Stack spacing={2}>
+        <Breadcrumbs>
+          <Typography sx={{ cursor: 'pointer' }} color="primary" onClick={() => navigate('/purchase-orders')}>
+            PO Listing
+          </Typography>
+          <Typography color="text.secondary">PO Details</Typography>
+        </Breadcrumbs>
+
+        <HeaderCard
+          po={po}
+          actions={supplier ? (
+            <>
+              {activeTab === 1 ? (
+                <>
+                  <Button size="small" variant="outlined" disabled={!hasSelectedLineActionTarget} onClick={() => openDialogForAction('RAISE_CONCESSION')}>RAISE CONSESSION</Button>
+                  <Button size="small" variant="outlined" disabled={!hasSelectedLineActionTarget} onClick={() => openDocumentReplaceDialog()}>UPLOAD DOCUMENT</Button>
+                  <Button size="small" sx={{bgcolor: 'primary.main', color: '#fff'}} variant="outlined" disabled={!hasSelectedLineActionTarget} onClick={() => openDialogForAction('ACKNOWLEDGE')}>ACKNOWLEDGE</Button>
+                </>
+              ) : null}
+              {activeTab === 3 ? (
+                <Button size="small" variant="outlined" startIcon={<Upload />} disabled={!hasSelectedLineActionTarget} onClick={() => openDocumentReplaceDialog()}>UPLOAD DOCUMENT</Button>
+              ) : null}
+            </>
+          ) : null}
+        />
+
+        {error ? <Alert severity="error">{error}</Alert> : null}
+
+        <Paper variant="outlined" sx={{ p: 0, borderColor: '#d6dde8', borderRadius: 1, boxShadow: '0 1px 2px rgba(15,23,42,0.04)' }}>
+          <Tabs value={activeTab} onChange={(_, v) => setActiveTab(v)} variant="scrollable" sx={{ borderBottom: '1px solid #e5e7eb', '& .MuiTab-root': { minHeight: 40, textTransform: 'none' } }}>
+            {tabs.map((t, idx) => (
+              <Tab key={t} label={idx === 1 ? `${t} (${lineItems.length})` : t} />
+            ))}
+          </Tabs>
+
+          <Box sx={{ p: 0 }}>
+            {activeTab === 0 ? <OverviewTab po={po} /> : null}
+
+            {activeTab === 1 ? (
+              <LineItemsTab
+                displayedLineItems={displayedLineItems}
+                columns={supplier ? supplierLineColumns : lineColumns}
+                pinnedCount={pinnedLineIds.length}
+                linePinFilter={linePinFilter}
+                onTogglePinFilter={() => setLinePinFilter((prev) => (prev === 'pinned' ? 'all' : 'pinned'))}
+                checkboxSelection={supplier}
+                rowSelectionModel={selectedLineIds}
+                onRowSelectionModelChange={setSelectedLineIds}
+              />
+            ) : null}
+
+            {activeTab === 2 ? <HistoryTab historyRows={historyRows} /> : null}
+
+            {activeTab === 3 ? (
+              <DocumentsTab
+                documentsRows={documentsRows}
+                role={role}
+                onReviewDocument={openDocumentReviewDialog}
+                onDownloadDocument={(doc) => void downloadDocument(doc.id, doc.file_name || doc.file_path)}
+                onReplaceDocument={openDocumentReplaceDialog}
+                checkboxSelection={supplier}
+                rowSelectionModel={selectedDocumentIds}
+                onRowSelectionModelChange={setSelectedDocumentIds}
+              />
+            ) : null}
+          </Box>
+        </Paper>
+      </Stack>
+
+      <ActionsMenu
+        role={role}
+        anchorEl={menuAnchorEl}
+        onClose={closeMenu}
+        onOpenDialog={openDialogForAction}
+      />
+
+      <MoveDateDialog
+        open={activeDialog === 'MOVE_IN'}
+        mode="MOVE_IN"
+        lineId={formatLineId(selectedLine || undefined)}
+        materialCode={selectedLine?.material_code}
+        quantity={selectedLine?.quantity}
+        currentDate={selectedLine?.required_in_house_date}
+        date={dialogDate}
+        onDateChange={setDialogDate}
+        onClose={closeDialog}
+        onSubmit={() => void submitMove('MOVE_IN')}
+      />
+
+      <MoveDateDialog
+        open={activeDialog === 'MOVE_OUT'}
+        mode="MOVE_OUT"
+        lineId={formatLineId(selectedLine || undefined)}
+        materialCode={selectedLine?.material_code}
+        quantity={selectedLine?.quantity}
+        currentDate={selectedLine?.shipment_date}
+        date={dialogDate}
+        onDateChange={setDialogDate}
+        onClose={closeDialog}
+        onSubmit={() => void submitMove('MOVE_OUT')}
+      />
+
+      <SimpleInfoDialog
+        open={activeDialog === 'HOLD'}
+        title="Hold"
+        lineId={formatLineId(selectedLine || undefined)}
+        materialCode={selectedLine?.material_code}
+        quantity={selectedLine?.quantity}
+        deliveryDate={selectedLine?.required_in_house_date}
+        note={dialogNote}
+        onNoteChange={setDialogNote}
+        onClose={closeDialog}
+        onSubmit={() => void submitSimpleLineAction('HOLD')}
+      />
+
+      <SimpleInfoDialog
+        open={activeDialog === 'ACCEPT'}
+        title="Accept"
+        lineId={formatLineId(selectedLine || undefined)}
+        materialCode={selectedLine?.material_code}
+        quantity={selectedLine?.quantity}
+        deliveryDate={selectedLine?.required_in_house_date}
+        note={dialogNote}
+        onNoteChange={setDialogNote}
+        onClose={closeDialog}
+        onSubmit={() => void submitSimpleLineAction('ACCEPT')}
+      />
+
+      <SimpleInfoDialog
+        open={activeDialog === 'ACKNOWLEDGE'}
+        title="Acknowledge"
+        lineId={formatLineId(selectedLine || undefined)}
+        materialCode={selectedLine?.material_code}
+        quantity={selectedLine?.quantity}
+        deliveryDate={selectedLine?.required_in_house_date}
+        note={dialogNote}
+        onNoteChange={setDialogNote}
+        onClose={closeDialog}
+        onSubmit={() => void submitSimpleLineAction('ACKNOWLEDGE')}
+      />
+
+      <SplitDialog
+        open={activeDialog === 'SPLIT'}
+        lineId={formatLineId(selectedLine || undefined)}
+        materialCode={selectedLine?.material_code}
+        rows={splitRows}
+        note={dialogNote}
+        onChangeRows={setSplitRows}
+        onNoteChange={setDialogNote}
+        onClose={closeDialog}
+        onSubmit={() => void submitSplit()}
+      />
+
+      <SimpleInfoDialog
+        open={activeDialog === 'REJECT'}
+        title="Rejected"
+        lineId={formatLineId(selectedLine || undefined)}
+        materialCode={selectedLine?.material_code}
+        quantity={selectedLine?.quantity}
+        deliveryDate={selectedLine?.required_in_house_date}
+        note={dialogNote}
+        onNoteChange={setDialogNote}
+        onClose={closeDialog}
+        onSubmit={() => void submitSimpleLineAction('REJECT')}
+      />
+
+      <SimpleInfoDialog
+        open={activeDialog === 'NEED_MORE_INFORMATION'}
+        title="More Information Needed"
+        lineId={formatLineId(selectedLine || undefined)}
+        materialCode={selectedLine?.material_code}
+        quantity={selectedLine?.quantity}
+        deliveryDate={selectedLine?.required_in_house_date}
+        note={dialogNote}
+        onNoteChange={setDialogNote}
+        onClose={closeDialog}
+        onSubmit={() => void submitSimpleLineAction('NEED_MORE_INFORMATION')}
+      />
+
+      <ProposeChangeDialog
+        open={activeDialog === 'PROPOSE_CHANGE'}
+        lineId={formatLineId(selectedLine || undefined)}
+        materialCode={selectedLine?.material_code}
+        quantity={proposeQuantity}
+        unitPrice={proposeUnitPrice}
+        deliveryDate={proposeDeliveryDate}
+        note={dialogNote}
+        onQuantityChange={setProposeQuantity}
+        onUnitPriceChange={setProposeUnitPrice}
+        onDeliveryDateChange={setProposeDeliveryDate}
+        onNoteChange={setDialogNote}
+        onClose={closeDialog}
+        onSubmit={() => void submitSimpleAction('PROPOSE_CHANGE')}
+      />
+
+      <RaiseConcessionDialog
+        open={activeDialog === 'RAISE_CONCESSION'}
+        lineId={formatLineId(selectedLine || undefined)}
+        materialCode={selectedLine?.material_code}
+        description={selectedLine?.description}
+        documentsRows={documentsRows}
+        selectedDocumentId={concessionDocumentId}
+        reason={dialogNote}
+        concessionDescription={concessionDescription}
+        onReasonChange={setDialogNote}
+        onDocumentIdChange={setConcessionDocumentId}
+        onConcessionDescriptionChange={setConcessionDescription}
+        onClose={closeDialog}
+        onSubmit={() => void submitSimpleAction('RAISE_CONCESSION')}
+      />
+
+      <UploadDocumentDialog
+        open={activeDialog === 'UPLOAD_DOCUMENT'}
+        lineId={selectedLineIds.length > 1 ? `${selectedLineIds.length} selected` : formatLineId(selectedLine || undefined)}
+        uploadFile={uploadFile}
+        uploadComments={uploadComments}
+        documentsRows={documentsRows}
+        onUploadFileChange={setUploadFile}
+        onUploadCommentsChange={setUploadComments}
+        onDownloadDocument={(doc) => void downloadDocument(doc.id, doc.file_name || doc.file_path)}
+        onClose={closeDialog}
+        onSubmit={() => void submitDocumentUploadOrReplace()}
+      />
+    </Box>
+  );
+};
+
+export default PurchaseOrderDetails;
+
