@@ -121,7 +121,7 @@ const PurchaseOrderDetails: React.FC = () => {
   }, [reloadAll]);
 
   const lineItems = po?.line_items || [];
-  const hasSelectedLineActionTarget = selectedLineIds.length > 0 || Boolean(selectedLine);
+  const hasSelectedSupplierLineRows = selectedLineIds.length > 0;
 
   const closeDialog = () => {
     setActiveDialog('NONE');
@@ -145,9 +145,11 @@ const PurchaseOrderDetails: React.FC = () => {
   };
 
   const resolvePrimaryLine = () => {
-    if (selectedLine) return selectedLine;
     const selectedLineId = selectedLineIds[0];
-    return selectedLineId ? lineItems.find((line) => formatLineId(line) === selectedLineId) || null : null;
+    if (selectedLineId) {
+      return lineItems.find((line) => formatLineId(line) === selectedLineId) || null;
+    }
+    return selectedLine;
   };
 
   const closeMenu = () => {
@@ -277,9 +279,31 @@ const PurchaseOrderDetails: React.FC = () => {
         payload.proposed_delivery_date = proposeDeliveryDate || null;
       }
       if (action === 'RAISE_CONCESSION') {
+        if (uploadFile) {
+          if (!id || selectedIds.length === 0) {
+            setError('Please select a line item before uploading a concession document');
+            return;
+          }
+          const primaryLineId = selectedIds[0];
+          if (!primaryLineId) {
+            setError('Please select a line item before uploading a concession document');
+            return;
+          }
+          const uploaded = await purchaseOrderService.uploadPODocument(id, {
+            line_item_id: primaryLineId,
+            file: uploadFile,
+            comments: concessionDescription || 'Concession request attachment',
+          });
+          const uploadedDocumentId = (uploaded as { id?: string }).id;
+          if (uploadedDocumentId) {
+            payload.document_id = uploadedDocumentId;
+            setConcessionDocumentId(uploadedDocumentId);
+            await reloadDocuments();
+          }
+        }
         payload.concession_reason = dialogNote || '';
         payload.concession_description = concessionDescription || '';
-        payload.document_id = concessionDocumentId || undefined;
+        payload.document_id = payload.document_id || concessionDocumentId || undefined;
       }
       await executeAction(action, payload, selectedIds);
       closeDialog();
@@ -437,13 +461,13 @@ const PurchaseOrderDetails: React.FC = () => {
             <>
               {activeTab === 1 ? (
                 <>
-                  <Button size="small" variant="outlined" disabled={!hasSelectedLineActionTarget} onClick={() => openDialogForAction('RAISE_CONCESSION')}>RAISE CONSESSION</Button>
-                  <Button size="small" variant="outlined" disabled={!hasSelectedLineActionTarget} onClick={() => openDocumentReplaceDialog()}>UPLOAD DOCUMENT</Button>
-                  <Button size="small" sx={{bgcolor: 'primary.main', color: '#fff'}} variant="outlined" disabled={!hasSelectedLineActionTarget} onClick={() => openDialogForAction('ACKNOWLEDGE')}>ACKNOWLEDGE</Button>
+                  <Button size="small" variant="outlined" disabled={!hasSelectedSupplierLineRows} onClick={() => openDialogForAction('RAISE_CONCESSION')}>RAISE CONSESSION</Button>
+                  <Button size="small" variant="outlined" disabled={!hasSelectedSupplierLineRows} onClick={() => openDocumentReplaceDialog()}>UPLOAD DOCUMENT</Button>
+                  <Button size="small" sx={{bgcolor: 'primary.main', color: '#fff'}} variant="outlined" disabled={!hasSelectedSupplierLineRows} onClick={() => openDialogForAction('ACKNOWLEDGE')}>ACKNOWLEDGE</Button>
                 </>
               ) : null}
               {activeTab === 3 ? (
-                <Button size="small" variant="outlined" startIcon={<Upload />} disabled={!hasSelectedLineActionTarget} onClick={() => openDocumentReplaceDialog()}>UPLOAD DOCUMENT</Button>
+                <Button size="small" variant="outlined" startIcon={<Upload />} disabled={!hasSelectedSupplierLineRows} onClick={() => openDocumentReplaceDialog()}>UPLOAD DOCUMENT</Button>
               ) : null}
             </>
           ) : null}
@@ -625,10 +649,12 @@ const PurchaseOrderDetails: React.FC = () => {
         description={selectedLine?.description}
         documentsRows={documentsRows}
         selectedDocumentId={concessionDocumentId}
+        uploadFile={uploadFile}
         reason={dialogNote}
         concessionDescription={concessionDescription}
         onReasonChange={setDialogNote}
         onDocumentIdChange={setConcessionDocumentId}
+        onUploadFileChange={setUploadFile}
         onConcessionDescriptionChange={setConcessionDescription}
         onClose={closeDialog}
         onSubmit={() => void submitSimpleAction('RAISE_CONCESSION')}

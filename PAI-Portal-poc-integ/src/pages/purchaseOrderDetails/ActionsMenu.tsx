@@ -19,7 +19,9 @@ const ActionsMenu: React.FC<ActionsMenuProps> = ({ role, anchorEl, onClose, onOp
       {supplier ? (
         <>
           <MenuItem onClick={() => { onClose(); onOpenDialog('PROPOSE_CHANGE'); }}><Stack direction="row" alignItems="center" spacing={1.5}><Sync fontSize="small" /><Typography variant="body2">Propose change</Typography></Stack></MenuItem>
+          <Divider />
           <MenuItem onClick={() => { onClose(); onOpenDialog('RAISE_CONCESSION'); }}><Stack direction="row" alignItems="center" spacing={1.5}><TrendingUp fontSize="small" /><Typography variant="body2">Raise Concession</Typography></Stack></MenuItem>
+          <Divider />
           <MenuItem onClick={() => { onClose(); onOpenDialog('UPLOAD_DOCUMENT'); }}><Stack direction="row" alignItems="center" spacing={1.5}><Upload fontSize="small" /><Typography variant="body2">Upload Document</Typography></Stack></MenuItem>
           <Divider />
           <MenuItem onClick={() => { onClose(); onOpenDialog('SPLIT'); }}><Stack direction="row" alignItems="center" spacing={1.5}><CallSplit fontSize="small" /><Typography variant="body2">Split</Typography></Stack></MenuItem>
@@ -29,14 +31,19 @@ const ActionsMenu: React.FC<ActionsMenuProps> = ({ role, anchorEl, onClose, onOp
       ) : (
         <>
           <MenuItem onClick={() => { onClose(); onOpenDialog('MOVE_IN'); }}><Stack direction="row" alignItems="center" spacing={1.5}><ArrowBack fontSize="small" /><Typography variant="body2">Move in</Typography></Stack></MenuItem>
+          <Divider />
           <MenuItem onClick={() => { onClose(); onOpenDialog('MOVE_OUT'); }}><Stack direction="row" alignItems="center" spacing={1.5}><ArrowForward fontSize="small" /><Typography variant="body2">Move out</Typography></Stack></MenuItem>
+          <Divider />
           <MenuItem onClick={() => { onClose(); onOpenDialog('SPLIT'); }}><Stack direction="row" alignItems="center" spacing={1.5}><CallSplit fontSize="small" /><Typography variant="body2">Split</Typography></Stack></MenuItem>
           <Divider />
           <MenuItem onClick={() => { onClose(); onOpenDialog('HOLD'); }}><Stack direction="row" alignItems="center" spacing={1.5}><InfoOutlined fontSize="small" /><Typography variant="body2">Hold</Typography></Stack></MenuItem>
+          <Divider />
           <MenuItem onClick={() => { onClose(); onOpenDialog('REJECT'); }}><Stack direction="row" alignItems="center" spacing={1.5}><Close fontSize="small" /><Typography variant="body2">Reject</Typography></Stack></MenuItem>
+          <Divider />
           <MenuItem onClick={() => { onClose(); onOpenDialog('ACCEPT'); }}><Stack direction="row" alignItems="center" spacing={1.5}><CheckCircle fontSize="small" /><Typography variant="body2">Accept</Typography></Stack></MenuItem>
           <Divider />
           <MenuItem onClick={() => { onClose(); onOpenDialog('ACKNOWLEDGE'); }}><Stack direction="row" alignItems="center" spacing={1.5}><InfoOutlined fontSize="small" /><Typography variant="body2">Acknowledge</Typography></Stack></MenuItem>
+          <Divider />
           <MenuItem onClick={() => { onClose(); onOpenDialog('NEED_MORE_INFORMATION'); }}><Stack direction="row" alignItems="center" spacing={1.5}><InfoOutlined fontSize="small" /><Typography variant="body2">Need More Information</Typography></Stack></MenuItem>
         </>
       )}

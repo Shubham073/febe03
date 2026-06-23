@@ -1,6 +1,6 @@
 import React from 'react';
-import { Close } from '@mui/icons-material';
-import { Box, Button, Dialog, DialogActions, DialogContent, Grid, IconButton, MenuItem, Stack, TextField, Typography } from '@mui/material';
+import { Close, Upload } from '@mui/icons-material';
+import { Box, Button, Dialog, DialogActions, DialogContent, Grid, IconButton, MenuItem, Paper, Stack, TextField, Typography } from '@mui/material';
 
 import { poDetailsColors } from './constants';
 import { DocsRow } from '@/pages/purchaseOrderDetails/types';
@@ -12,10 +12,12 @@ type RaiseConcessionDialogProps = {
   description?: string;
   documentsRows: DocsRow[];
   selectedDocumentId: string;
+  uploadFile: File | null;
   reason: string;
   concessionDescription: string;
   onReasonChange: (value: string) => void;
   onDocumentIdChange: (value: string) => void;
+  onUploadFileChange: (file: File | null) => void;
   onConcessionDescriptionChange: (value: string) => void;
   onClose: () => void;
   onSubmit: () => void;
@@ -28,10 +30,12 @@ const RaiseConcessionDialog: React.FC<RaiseConcessionDialogProps> = ({
   description,
   documentsRows,
   selectedDocumentId,
+  uploadFile,
   reason,
   concessionDescription,
   onReasonChange,
   onDocumentIdChange,
+  onUploadFileChange,
   onConcessionDescriptionChange,
   onClose,
   onSubmit,
@@ -67,7 +71,7 @@ const RaiseConcessionDialog: React.FC<RaiseConcessionDialogProps> = ({
                   <MenuItem value="Surface finish deviation">Surface finish deviation</MenuItem>
                   <MenuItem value="Other">Other</MenuItem>
                 </TextField>
-                <TextField
+                {/* <TextField
                   label="Document"
                   select
                   fullWidth
@@ -81,12 +85,32 @@ const RaiseConcessionDialog: React.FC<RaiseConcessionDialogProps> = ({
                       {document.file_name || document.file_path || document.id}
                     </MenuItem>
                   ))}
-                </TextField>
+                </TextField> */}
                 <TextField label="Description" fullWidth size="small" multiline rows={4} value={concessionDescription} onChange={(e) => onConcessionDescriptionChange(e.target.value)} />
               </Stack>
             </Box>
           </Grid>
         </Grid>
+
+        <Paper variant="outlined" sx={{ mt: 2, p: 3 }}>
+          <Stack spacing={1.5} alignItems="center" sx={{ py: 1 }}>
+            <Upload color="action" />
+            <Typography variant="body2">
+              <Typography component="span" color="primary">Link</Typography> or drag and drop
+            </Typography>
+            <Typography variant="caption" color="text.secondary">SVG, PNG, JPG or GIF (max. 3MB)</Typography>
+            <Button component="label" variant="outlined" size="small">
+              Choose File
+              <input hidden type="file" onChange={(e) => onUploadFileChange(e.target.files?.[0] || null)} />
+            </Button>
+            {uploadFile ? <Typography variant="caption">Selected: {uploadFile.name}</Typography> : null}
+            {uploadFile ? (
+              <Button size="small" variant="text" onClick={() => onUploadFileChange(null)}>
+                Clear
+              </Button>
+            ) : null}
+          </Stack>
+        </Paper>
       </DialogContent>
       <DialogActions sx={{ p: 2 }}>
         <Button size="small" variant="outlined" onClick={onClose}>Cancel</Button>
