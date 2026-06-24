@@ -121,4 +121,9 @@ GET /po?status=APPROVED&supplier_id=SUP-001
 - 1 Admin
 - 150 Purchase Orders
 
+## Excel Seed Workflow
+- Purchase order seed data is generated locally from an Excel file into `data/purchase_orders.json`
+- Do not commit `.xlsx`/`.xls` source files to GitHub
+- Use `OPEN_PO_EXCEL_PATH` or run `python scripts/seed_purchase_orders_from_excel.py <path-to-xlsx>` to regenerate JSON
+
 ---
