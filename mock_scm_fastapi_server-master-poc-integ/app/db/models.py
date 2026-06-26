@@ -228,6 +228,26 @@ class Delegation(Base):
         nullable=False,
     )
 
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sender_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
 
 class ChatSession(Base):
     __tablename__ = "chat_sessions"
@@ -253,8 +273,23 @@ class ChatSession(Base):
     )
 
 
-class ChatMessage(Base):
-    __tablename__ = "chat_messages"
+class ACSChatCollection(Base):
+    __tablename__ = "acs_chat_collection"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    thread_id: Mapped[str] = mapped_column(String, index=True)
+    po_number: Mapped[str] = mapped_column(String, index=True)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+
+class ChatMessageCollection(Base):
+    __tablename__ = "chat_messages_collection"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     session_id: Mapped[str] = mapped_column(

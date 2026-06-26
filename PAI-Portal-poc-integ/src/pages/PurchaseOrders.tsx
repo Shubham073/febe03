@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Typography,
@@ -32,18 +32,22 @@ import {
   POFilters as POFiltersType,
   AdvanceFilters,
   PurchaseOrderStatus,
-  User,
 } from '@/models';
 import { useAuth } from '@/hooks/useAuth';
 import POFilters from '@/components/common/POFilters';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
-import { useDebounce } from '@/hooks/useDebounce';
 import { usePagination } from '@/hooks/usePagination';
 import { format } from 'date-fns';
 import { logger } from '@/services/logger';
 import ClearIcon from '@mui/icons-material/Clear';
 import './grid.css';
 import { userService } from '@/api/services/userService';
+
+type LineItemTabRow = {
+  id: string;
+  po_id: string;
+  [key: string]: unknown;
+};
 
 const PurchaseOrders: React.FC = () => {
   const navigate = useNavigate();
@@ -53,16 +57,23 @@ const PurchaseOrders: React.FC = () => {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('list');
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [selectedTab, setSelectedTab] = useState(0);
+  
+  const isPOToReviewTab = selectedTab === 2;
+  const isMRPExceptionTab = selectedTab === 3;
+  const isLineItemTab = isPOToReviewTab || isMRPExceptionTab;
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [procurementSpecialists, setProcurementSpecialists] = useState<User[]>([]);
+  const [lineItemRows, setLineItemRows] = useState<LineItemTabRow[]>([]);
+
+  const { page, pageSize, setPage, setPageSize } = usePagination(0, 60);
+  const [rowCount, setRowCount] = useState(0);
 
   // Filter states
   const [searchInput, setSearchInput] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
-
-  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
+  const [availableSites, setAvailableSites] = useState<string[]>([]);
+  const [selectedSites, setSelectedSites] = useState<string[]>([]);
+  const [sitesLoaded, setSitesLoaded] = useState(false);
   const [statusFilter, setStatusFilter] = useState('');
   // const [sortBy, setSortBy] = useState('');
   // const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
@@ -70,10 +81,6 @@ const PurchaseOrders: React.FC = () => {
     sort_by: string | undefined;
     sort_order: 'asc' | 'desc';
   }>({ sort_by: '', sort_order: 'desc' });
-
-  const { page, pageSize, setPage, setPageSize } = usePagination(0, 60);
-  const [rowCount, setRowCount] = useState(0);
-  const debouncedSearchQuery = useDebounce(searchQuery, 600);
 
   // Advanced filters
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
@@ -84,14 +91,82 @@ const PurchaseOrders: React.FC = () => {
   const [pinnedPOs, setPinnedPOs] = useState<PurchaseOrder[]>([]);
   const [pinnedPOsRowCount, setPinnedPOsRowCount] = useState(0);
   const [pinFilter, setPinFilter] = useState('all'); // 'all', 'pinned'
+  const [poToReviewPinFilter, setPOToReviewPinFilter] = useState('all');
+  const [mrpPinFilter, setMrpPinFilter] = useState('all');
+  //line item level pinning for potoreview & MRP tab
+  const [pinnedPOToReviewLineItemIds, setPinnedPOToReviewLineItemIds] = useState<string[]>([]);
+  const [pinnedMRPLineItemIds, setPinnedMRPLineItemIds] = useState<string[]>([]);
+
+  const currentPinFilter = React.useMemo(() => {
+    switch (selectedTab) {
+      case 2: // PO TO REVIEW
+        return poToReviewPinFilter;
+
+      case 3: // MRP EXCEPTION
+        return mrpPinFilter;
+
+      case 0: // OPEN PO / normal PO list
+      default:
+        return pinFilter;
+    }
+  }, [selectedTab, pinFilter, poToReviewPinFilter, mrpPinFilter]);
+
+  const handleCurrentPinFilterChange = useCallback(
+    (value: string) => {
+      switch (selectedTab) {
+        case 2: // PO TO REVIEW
+          setPOToReviewPinFilter(value);
+          break;
+
+        case 3: // MRP EXCEPTION
+          setMrpPinFilter(value);
+          break;
+
+        case 0: // OPEN PO / normal PO list
+        default:
+          setPinFilter(value);
+          break;
+      }
+
+      setPage(0);
+    },
+    [selectedTab, setPage]
+  );
 
   const togglePin = (poId: string) => {
-    console.log('--pids: ', pinnedPOIds, '--poId: ', poId);
     setPinnedPOIds((prev) => {
       const updated = prev.includes(poId) ? prev.filter((id) => id !== poId) : [...prev, poId];
 
       if (user?.id) {
-        userService.updatePinnedRows(user.id, updated);
+        userService.updatePinnedRows(user.id, updated, 'po');
+      }
+
+      return updated;
+    });
+  };
+
+  const togglePOToReviewLinePin = (lineItemRowId: string) => {
+    setPinnedPOToReviewLineItemIds((prev) => {
+      const updated = prev.includes(lineItemRowId)
+        ? prev.filter((id) => id !== lineItemRowId)
+        : [...prev, lineItemRowId];
+
+      if (user?.id) {
+        userService.updatePinnedRows(user.id, updated, 'po_to_review');
+      }
+
+      return updated;
+    });
+  };
+
+  const toggleMRPLinePin = (lineItemRowId: string) => {
+    setPinnedMRPLineItemIds((prev) => {
+      const updated = prev.includes(lineItemRowId)
+        ? prev.filter((id) => id !== lineItemRowId)
+        : [...prev, lineItemRowId];
+
+      if (user?.id) {
+        userService.updatePinnedRows(user.id, updated, 'mrp_exception');
       }
 
       return updated;
@@ -99,20 +174,32 @@ const PurchaseOrders: React.FC = () => {
   };
 
   useEffect(() => {
-    const loadProcurementSpecialists = async () => {
+    const loadAvailableSites = async () => {
       try {
-        const users = await userService.getUsersByRole('PROCUREMENT_SPECIALIST');
-        setProcurementSpecialists(users);
+        const sites = await purchaseOrderService.getAvailableSites();
+
+        setAvailableSites(sites);
+        setSelectedSites(sites);
       } catch (error) {
-        console.error('Failed to load procurement specialists', error);
+        console.error('Failed to load available sites', error);
+        setAvailableSites([]);
+        setSelectedSites([]);
+      } finally {
+        setSitesLoaded(true);
       }
     };
 
-    loadProcurementSpecialists();
+    loadAvailableSites();
   }, []);
 
   const fetchPurchaseOrders = useCallback(async () => {
+    if (!sitesLoaded) {
+      return;
+    }
+
     const startTime = performance.now();
+    const isLineTabRequest = selectedTab === 2 || selectedTab === 3;
+
     try {
       setLoading(true);
       setError(null);
@@ -121,52 +208,79 @@ const PurchaseOrders: React.FC = () => {
       console.log('-----------pinnedOrNot:', pinFilter);
       // console.log('pinnedList:', pinnedPOIds);
 
+      if (user?.id) {
+        const pinnedPOResult = await userService.getPinnedRows(user.id, 'po');
+        const pinnedPOToReviewResult = await userService.getPinnedRows(user.id, 'po_to_review');
+        const pinnedMRPResult = await userService.getPinnedRows(user.id, 'mrp_exception');
+
+        setPinnedPOIds(pinnedPOResult);
+        setPinnedPOToReviewLineItemIds(pinnedPOToReviewResult);
+        setPinnedMRPLineItemIds(pinnedMRPResult);
+
+        const pinnedPOList = await purchaseOrderService.getPinnedPOList(user.id);
+
+        setPinnedPOs(pinnedPOList.data);
+        setPinnedPOsRowCount(pinnedPOList.total);
+      }
+
+      if (isLineTabRequest) {
+        const lineItemFilters: POFiltersType = {
+          search: searchInput,
+          sort_by: sortModel.sort_by,
+          sort_order: sortModel.sort_order,
+          tab_mode: selectedTab === 2 ? 'ready_to_review' : 'mrp_exception',
+          include_line_items_only: true,
+        };
+
+        if (user?.role === 'SUPPLIER') {
+          lineItemFilters.supplier_id = String(user.supplier_msid ?? user.id);
+        }
+
+        const lineResponse = await purchaseOrderService.getPOList(lineItemFilters);
+
+        setLineItemRows(lineResponse.data as unknown as LineItemTabRow[]);
+        setPurchaseOrders([]);
+        setRowCount(lineResponse.total);
+
+        logger.info('Line item tab data fetched', {
+          tab: selectedTab === 2 ? 'ready_to_review' : 'mrp_exception',
+          durationMs: Math.round(performance.now() - startTime),
+          rowCount: lineResponse.total,
+        });
+
+        return;
+      }
+
       const filters: POFiltersType = {
         page: page + 1,
         page_size: pageSize,
         status: statusFilter,
         sort_by: sortModel.sort_by,
         sort_order: sortModel.sort_order,
-        search: searchQuery,
+        search: searchInput,
         ...advanceFilters,
       };
 
-      const pinnedPOResult = await userService.getPinnedRows(user?.id || '');
+      if (user?.role === 'SUPPLIER') {
+        filters.supplier_id = String(user.supplier_msid ?? user.id);
+      }
 
-      // console.log('------------------Fetched pinned PO IDs from server:', pinnedPOResult);
-
-      setPinnedPOIds(pinnedPOResult);
-
-      const pinnedPOList = await purchaseOrderService.getPinnedPOList(user?.id || '');
-      // const pinnedPOList = await purchaseOrderService.getPOList({
-      //   page: page + 1,
-      //   page_size: pageSize,
-      //   pinned_po_list: pinnedPOResult,
-      //   // pinned_po_list: pinFilter === 'pinned' ? pinnedPOIds : [],
-      // });
-
-      console.log('------------------Fetched pinned PO List from server :', pinnedPOList.data);
-
-      setPinnedPOs(pinnedPOList.data);
-      console.log('Current User:', user);
-      console.log('Pinned POs Returned:', pinnedPOList.data);
-      setPinnedPOsRowCount(pinnedPOList.total);
       console.log('Final filters:', filters);
 
       logger.info('Fetching purchase orders', {
         page: filters.page,
         pageSize: filters.page_size,
         status: filters.status,
-        search: debouncedSearchQuery,
+        search: searchInput,
         advanceFilters: Object.keys(advanceFilters).length,
       });
 
-      if (user?.role === 'PROCUREMENT_SPECIALIST') {
-        filters.procurement_specialist_id = user.id;
-      }
-
+      //console.log("Filters Sent:", filters);
+      console.log('Selected Sites Sent:', selectedSites);
       const response = await purchaseOrderService.getPOList(filters);
+      console.log('po resp: ', response);
       setPurchaseOrders(response.data);
+      setLineItemRows([]);
       setRowCount(response.total);
 
       logger.info('Purchase orders fetched', {
@@ -187,20 +301,29 @@ const PurchaseOrders: React.FC = () => {
   }, [
     page,
     pageSize,
+    selectedTab,
     statusFilter,
     sortModel,
-    debouncedSearchQuery,
+    searchInput,
     user,
     advanceFilters,
     pinFilter,
+    selectedSites,
+    sitesLoaded,
   ]);
 
   useEffect(() => {
-    fetchPurchaseOrders();
+     fetchPurchaseOrders();
   }, [fetchPurchaseOrders]);
 
-  const handlePOClick = (po: PurchaseOrder) => {
-    navigate(`/purchase-orders/${po.id}`);
+  // const handlePOClick = (po: PurchaseOrder) => {
+  //   navigate(`/purchase-orders/${po.id}`);
+  // };
+
+  const handleGridRowClick = (row: any) => {
+    const poId = row.po_id || row.id;
+
+    navigate(`/purchase-orders/${poId}`);
   };
 
   const appliedFilters = [
@@ -268,29 +391,14 @@ const PurchaseOrders: React.FC = () => {
     }
   };
 
-  const handleSearchChange = useCallback(
-    (value: string) => {
-      setSearchInput(value);
 
-      if (searchDebounceRef.current) {
-        clearTimeout(searchDebounceRef.current);
-      }
-
-      searchDebounceRef.current = setTimeout(() => {
-        setSearchQuery(value);
-        setPage(0);
-      }, 1000);
-    },
-    [setPage]
-  );
-
-  useEffect(() => {
-    return () => {
-      if (searchDebounceRef.current) {
-        clearTimeout(searchDebounceRef.current);
-      }
-    };
-  }, []);
+const handleSearchChange = useCallback(
+  (value: string) => {
+    setSearchInput(value);
+    setPage(0);
+  },
+  [setPage]
+);
 
   const handleAdvanceFilterChange = <K extends keyof AdvanceFilters>(
     key: K,
@@ -314,21 +422,11 @@ const PurchaseOrders: React.FC = () => {
 
   const handleApplyAdvanceFilters = () => {
     // TODO: Apply filters to the purchase orders list
-    console.log('Applying filters:', advanceTempFilters);
+    // console.log('Applying filters:', advanceTempFilters);
     setPage(0);
     setAdvancefilters({ ...advanceTempFilters });
     setShowAdvancedFilters(false);
   };
-
-  const procurementSpecialistMap = React.useMemo(() => {
-    return procurementSpecialists.reduce(
-      (acc, ps) => {
-        acc[ps.id] = ps;
-        return acc;
-      },
-      {} as Record<string, User>
-    );
-  }, [procurementSpecialists]);
 
   const statusColors = React.useMemo(
     () =>
@@ -346,14 +444,29 @@ const PurchaseOrders: React.FC = () => {
       >,
     []
   );
-  console.log("role:", user?.role);
+  // console.log('role:', user?.role);
+
+  //format currency
+  const formatCurrency = (value: unknown) => {
+    if (value === null || value === undefined || value === '') return '--';
+
+    const numericValue = Number(value);
+
+    if (Number.isNaN(numericValue)) return '--';
+
+    return `$${numericValue.toLocaleString()}`;
+  };
+
+  const hasCellValue = (value: unknown) =>
+  value !== null && value !== undefined && value !== '';
+
   // DataGrid columns
   const columns: GridColDef[] = React.useMemo(
     () => [
       {
         field: 'pin',
         headerName: 'Pin',
-        width: 60,
+        width: 40,
         sortable: false,
         filterable: false,
         renderCell: (params) => (
@@ -407,14 +520,14 @@ const PurchaseOrders: React.FC = () => {
             {
               field: 'supplier_name',
               headerName: 'Supplier',
-              width: 120,
+              width: 100,
             },
           ]
         : []),
       {
         field: 'status',
         headerName: 'PO Status',
-        width: 140,
+        width: 130,
         renderCell: (params) => (
           <Chip
             variant="outlined"
@@ -470,7 +583,7 @@ const PurchaseOrders: React.FC = () => {
       {
         field: 'supplier_email',
         headerName: 'Supplier Email',
-        width: 150,
+        width: 180,
       },
 
       // {
@@ -520,7 +633,7 @@ const PurchaseOrders: React.FC = () => {
             },
           ]
         : []),
-        ...(user?.role === 'SUPPLIER'
+      ...(user?.role === 'SUPPLIER'
         ? [
             {
               field: 'site',
@@ -530,11 +643,351 @@ const PurchaseOrders: React.FC = () => {
           ]
         : []),
     ],
-    [theme, pinnedPOIds, togglePin, statusColors, procurementSpecialistMap, user?.role]
+    [theme, pinnedPOIds, togglePin, statusColors, user?.role]
   );
-  
-console.log(columns.map((c) => c.field));
 
+  // console.log(columns.map((c) => c.field));
+
+  const poToReviewColumns: GridColDef[] = React.useMemo(
+    () => [
+      {
+        field: 'pin',
+        headerName: 'Pin',
+        width: 30,
+        sortable: false,
+        filterable: false,
+        renderCell: (params) => {
+          const lineItemRowId = params.row.id;
+          const isPinned = pinnedPOToReviewLineItemIds.includes(lineItemRowId);
+
+          return (
+            <Tooltip title={isPinned ? 'Unpin' : 'Pin'}>
+              <IconButton
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePOToReviewLinePin(lineItemRowId);
+                }}
+                sx={{
+                  color: isPinned ? 'primary.main' : 'action.disabled',
+                  '&:hover': {
+                    bgcolor: 'action.hover',
+                  },
+                }}
+              >
+                {isPinned ? (
+                  <PushPinIcon sx={{ fontSize: '1.25rem' }} />
+                ) : (
+                  <PushPinOutlinedIcon sx={{ fontSize: '1.25rem' }} />
+                )}
+              </IconButton>
+            </Tooltip>
+          );
+        },
+      },
+      {
+        field: 'po_number',
+        headerName: 'PO Number',
+        width: 100,
+        renderCell: (params) => (
+          <Typography
+            fontWeight="bold"
+            height="100%"
+            alignContent="center"
+            fontSize="0.8rem"
+            color={theme.palette.primary.light}
+          >
+            {params.value}
+          </Typography>
+        ),
+      },
+      {
+        field: 'line_number',
+        headerName: 'PO Line',
+        width: 50,
+      },
+      {
+        field: 'material_code',
+        headerName: 'Material No',
+        width: 110,
+      },
+      {
+        field: 'status',
+        headerName: 'Status',
+        width: 120,
+        renderCell: (params) => (
+          <Chip
+            variant="outlined"
+            label={params.value ? params.value.replace(/_/g, ' ') : '--'}
+            color={statusColors[params.value as PurchaseOrderStatus] || 'default'}
+            size="small"
+          />
+        ),
+      },
+      {
+        field: 'description',
+        headerName: 'Short Description',
+        width: 150,
+        renderCell: (params) => params.value || '--',
+      },
+      {
+        field: 'quantity',
+        headerName: 'Qty',
+        width: 60,
+        renderCell: (params) => params.value ?? '--',
+      },
+      {
+        field: 'updated_quantity',
+        headerName: 'Supplier confirmed Qty',
+        width: 60,
+        renderCell: (params) => params.value ?? '--',
+      },
+      {
+        field: 'unit_price',
+        headerName: 'Unit Price',
+        width: 70,
+        renderCell: (params) => formatCurrency(params.value),
+      },
+      {
+        field: 'updated_unit_price',
+        headerName: 'Updated Unit Price',
+        width: 70,
+        renderCell: (params) => formatCurrency(params.value),
+        cellClassName: (params) => (hasCellValue(params.value) ? 'changed-cell' : ''),
+      },
+      {
+        field: 'net_value',
+        headerName: 'Total Value',
+        width: 80,
+        renderCell: (params) => formatCurrency(params.value),
+      },
+      {
+        field: 'updated_net_value',
+        headerName: 'Updated Total Value',
+        width: 80,
+        renderCell: (params) => formatCurrency(params.value),
+        cellClassName: (params) => (hasCellValue(params.value) ? 'changed-cell' : ''),
+      },
+      {
+        field: 'required_in_house_date',
+        headerName: 'Need By Date',
+        width: 100,
+        renderCell: (params) => params.value || '--',
+      },
+      {
+        field: 'updated_delivery_date',
+        headerName: 'Revised Date',
+        width: 100,
+        renderCell: (params) => params.value || '--',
+        cellClassName: (params) => (hasCellValue(params.value) ? 'changed-cell' : ''),
+      },
+      {
+        field: 'supplier_confirmation_date',
+        headerName: 'Supplier Confirmation Date',
+        width: 100,
+        renderCell: (params) => params.value || '--',
+        cellClassName: (params) => (hasCellValue(params.value) ? 'changed-cell' : ''),
+      },
+      {
+        field: 'concession',
+        headerName: 'Concession',
+        width: 100,
+        renderCell: (params) => params.value || '--',
+        cellClassName: (params) => (hasCellValue(params.value) ? 'changed-cell' : ''),
+      },
+    ],
+    [pinnedPOToReviewLineItemIds, togglePOToReviewLinePin, theme, statusColors]
+  );
+
+  //MRP exception coulumns
+  const mrpExceptionColumns: GridColDef[] = React.useMemo(
+    () => [
+      {
+        field: 'pin',
+        headerName: 'Pin',
+        width: 40,
+        sortable: false,
+        filterable: false,
+        renderCell: (params) => {
+          const lineItemRowId = params.row.id;
+          const isPinned = pinnedMRPLineItemIds.includes(lineItemRowId);
+
+          return (
+            <Tooltip title={isPinned ? 'Unpin' : 'Pin'}>
+              <IconButton
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleMRPLinePin(lineItemRowId);
+                }}
+                sx={{
+                  color: isPinned ? 'primary.main' : 'action.disabled',
+                  '&:hover': {
+                    bgcolor: 'action.hover',
+                  },
+                }}
+              >
+                {isPinned ? (
+                  <PushPinIcon sx={{ fontSize: '1.25rem' }} />
+                ) : (
+                  <PushPinOutlinedIcon sx={{ fontSize: '1.25rem' }} />
+                )}
+              </IconButton>
+            </Tooltip>
+          );
+        },
+      },
+      {
+        field: 'po_number',
+        headerName: 'PO Number',
+        width: 100,
+        renderCell: (params) => (
+          <Typography
+            fontWeight="bold"
+            height="100%"
+            alignContent="center"
+            fontSize="0.8rem"
+            color={theme.palette.primary.light}
+          >
+            {params.value}
+          </Typography>
+        ),
+      },
+      {
+        field: 'line_number',
+        headerName: 'Line Item',
+        width: 50,
+      },
+      {
+        field: 'description',
+        headerName: 'Short Description',
+        width: 150,
+        renderCell: (params) => params.value || '--',
+      },
+      {
+        field: 'supplier_name',
+        headerName: 'Supplier',
+        width: 90,
+        renderCell: (params) => params.value || '--',
+      },
+      {
+        field: 'status',
+        headerName: 'PO Status',
+        width: 120,
+        renderCell: (params) => (
+          <Chip
+            variant="outlined"
+            label={params.value ? params.value.replace(/_/g, ' ') : '--'}
+            color={statusColors[params.value as PurchaseOrderStatus] || 'default'}
+            size="small"
+          />
+        ),
+      },
+      {
+        field: 'source_system',
+        headerName: 'ERP',
+        width: 70,
+        renderCell: (params) => params.value || '--',
+      },
+      {
+        field: 'net_value',
+        headerName: 'Line Item Value',
+        width: 80,
+        renderCell: (params) => formatCurrency(params.value),
+      },
+      {
+        field: 'recommendation',
+        headerName: 'Recommendations',
+        width: 160,
+        renderCell: (params) => (
+          <Typography
+            fontWeight="bold"
+            height="100%"
+            alignContent="center"
+            fontSize="0.8rem"
+            color={theme.palette.primary.light}
+          >
+            {params.value || '--'}
+          </Typography>
+        ),
+      },
+      {
+        field: 'quantity',
+        headerName: 'Qty',
+        width: 50,
+        renderCell: (params) => params.value ?? '--',
+      },
+      {
+        field: 'updated_quantity',
+        headerName: 'Updated Qty',
+        width: 60,
+        renderCell: (params) =>
+          params.value !== null && params.value !== undefined ? (
+            <Typography
+              fontWeight="bold"
+              height="100%"
+              alignContent="center"
+              fontSize="0.8rem"
+              color={theme.palette.primary.light}
+            >
+              {params.value}
+            </Typography>
+          ) : (
+            '--'
+          ),
+      },
+      {
+        field: 'required_in_house_date',
+        headerName: 'Need By Date',
+        width: 100,
+        renderCell: (params) => params.value || '--',
+      },
+      {
+        field: 'updated_delivery_date',
+        headerName: 'Revised Date',
+        width: 100,
+        renderCell: (params) =>
+          params.value ? (
+            <Typography
+              fontWeight="bold"
+              height="100%"
+              alignContent="center"
+              fontSize="0.8rem"
+              color={theme.palette.primary.light}
+            >
+              {params.value}
+            </Typography>
+          ) : (
+            '--'
+          ),
+      },
+      {
+        field: 'revision_changes',
+        headerName: 'Rev.',
+        width: 50,
+        renderCell: (params) => params.value ?? '--',
+      },
+      {
+        field: 'site',
+        headerName: 'Site',
+        width: 60,
+        renderCell: (params) => params.value || '--',
+      },
+      // {
+      //   field: 'action',
+      //   headerName: 'Action',
+      //   width: 90,
+      //   sortable: false,
+      //   filterable: false,
+      //   renderCell: () => (
+      //     <Typography height="100%" alignContent="center" fontSize="0.8rem" color="text.secondary">
+      //       ⋮
+      //     </Typography>
+      //   ),
+      // },
+    ],
+    [theme, statusColors,pinnedMRPLineItemIds,toggleMRPLinePin]
+  );
 
   //saperate page view for supplier & PS
   const supplierColumns = React.useMemo(
@@ -562,6 +1015,19 @@ console.log(columns.map((c) => c.field));
     [user?.role, supplierColumns, columns]
   );
 
+  const currentColumns = React.useMemo(() => {
+    switch (selectedTab) {
+      case 2: // PO TO REVIEW
+        return poToReviewColumns;
+
+      case 3: // MRP EXCEPTION
+        return mrpExceptionColumns;
+
+      default:
+        return gridColumns;
+    }
+  }, [selectedTab, poToReviewColumns, mrpExceptionColumns, gridColumns]);
+
   const displayedRows = React.useMemo(() => {
     const rows = pinFilter === 'pinned' ? pinnedPOs : purchaseOrders;
 
@@ -579,6 +1045,188 @@ console.log(columns.map((c) => c.field));
         return rows;
     }
   }, [selectedTab, pinFilter, purchaseOrders, pinnedPOs]);
+
+  const currentRows = React.useMemo(() => {
+    switch (selectedTab) {
+      case 2: {
+        return currentPinFilter === 'pinned'
+          ? lineItemRows.filter((row) => pinnedPOToReviewLineItemIds.includes(row.id))
+          : lineItemRows;
+      }
+
+      case 3: {
+        return currentPinFilter === 'pinned'
+          ? lineItemRows.filter((row) => pinnedMRPLineItemIds.includes(row.id))
+          : lineItemRows;
+      }
+
+      default:
+        return displayedRows;
+    }
+  }, [
+    selectedTab,
+    lineItemRows,
+    displayedRows,
+    currentPinFilter,
+    pinnedPOToReviewLineItemIds,
+    pinnedMRPLineItemIds,
+  ]);
+
+  const currentPinnedCount = React.useMemo(() => {
+    switch (selectedTab) {
+      case 2: // PO TO REVIEW
+        return pinnedPOToReviewLineItemIds.length;
+
+      case 3: // MRP EXCEPTION
+        return pinnedMRPLineItemIds.length;
+
+      case 0: // OPEN PO / normal PO list
+      default:
+        return pinnedPOIds.length;
+    }
+  }, [
+    selectedTab,
+    pinnedPOIds.length,
+    pinnedPOToReviewLineItemIds.length,
+    pinnedMRPLineItemIds.length,
+  ]);
+
+  const handleSelectedSitesChange = useCallback(
+    (sites: string[]) => {
+      setSelectedSites(sites);
+      setPage(0);
+    },
+    [setPage]
+  );
+
+  const ToolbarComponent = React.useCallback(
+    () => (
+      <>
+        <POFilters
+          searchInput={searchInput}
+          onSearchChange={handleSearchChange}
+          statusFilter={statusFilter}
+          onStatusChange={(value) => {
+            setStatusFilter(value);
+            setPage(0);
+          }}
+          sortOrder={sortModel.sort_order}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          onFiltersClick={() => setShowAdvancedFilters(true)}
+          pinFilter={currentPinFilter}
+          onPinFilterChange={handleCurrentPinFilterChange}
+          pinnedCount={currentPinnedCount}
+          availableSites={availableSites}
+          selectedSites={selectedSites}
+          onSelectedSitesChange={handleSelectedSitesChange}
+          userRole={user?.role}
+          selectedTab={selectedTab}
+          onTabChange={(tab) => {
+            setSelectedTab(tab);
+            setPage(0);
+          }}
+        />
+
+        <Box height={appliedFilters.length > 0 ? '4vh' : '0vh'} sx={{ mb: 0, pl: 1 }}>
+          {appliedFilters.length > 0 && (
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              {appliedFilters.map((filter) => (
+                <Chip
+                  key={filter.key}
+                  label={filter.label}
+                  size="small"
+                  color="primary"
+                  variant="outlined"
+                  onDelete={() => {
+                    const updated = { ...advanceFilters };
+                    delete updated[filter.key];
+                    setAdvancefilters(updated);
+                    setAdvanceTempfilters(updated);
+                  }}
+                />
+              ))}
+
+              <Chip
+                size="small"
+                label="Clear All"
+                color="error"
+                onClick={() => {
+                  setAdvancefilters({});
+                  setAdvanceTempfilters({});
+                }}
+              />
+            </Stack>
+          )}
+        </Box>
+      </>
+    ),
+    [
+      searchInput,
+      handleSearchChange,
+      statusFilter,
+      sortModel.sort_order,
+      viewMode,
+      handleCurrentPinFilterChange,
+      availableSites,
+      selectedSites,
+      handleSelectedSitesChange,
+      currentPinFilter,
+      currentPinnedCount,
+      user?.role,
+      selectedTab,
+      appliedFilters,
+      advanceFilters,
+      setPage,
+    ]
+  );
+  
+console.log(columns.map((c) => c.field));
+
+
+  //saperate page view for supplier & PS
+  // const supplierColumns = React.useMemo(
+  //   () =>
+  //     columns.filter((col) =>
+  //       [
+  //         'pin',
+  //         'po_number',
+  //         'status',
+  //         'supplier_name',
+  //         'total_value',
+  //         'line_items',
+  //         'revision_changes',
+  //         'buyer_name',
+  //         'buyer_email',
+  //         'buyer_phone',
+  //         'site',
+  //       ].includes(col.field)
+  //     ),
+  //   [columns]
+  // );
+
+  // const gridColumns = React.useMemo(
+  //   () => (user?.role === 'SUPPLIER' ? supplierColumns : columns),
+  //   [user?.role, supplierColumns, columns]
+  // );
+
+  // const displayedRows = React.useMemo(() => {
+  //   const rows = pinFilter === 'pinned' ? pinnedPOs : purchaseOrders;
+
+  //   switch (selectedTab) {
+  //     case 1: // OPEN PO
+  //       return rows.filter(
+  //         (po) => po.status === 'CREATED' || po.status === 'IN_PROGRESS' || po.status === 'APPROVED'
+  //       );
+
+  //     case 2: // PASS DELIVERY DATE
+  //       return rows;
+
+  //     case 0: // ALL PO
+  //     default:
+  //       return rows;
+  //   }
+  // }, [selectedTab, pinFilter, purchaseOrders, pinnedPOs]);
 
   if (loading && purchaseOrders.length === 0) {
     return <LoadingSpinner message="Loading purchase orders..." />;
@@ -643,131 +1291,84 @@ console.log(columns.map((c) => c.field));
         </Alert>
       )}
       {/* TODO: Optimise this block if selected */}
-      {purchaseOrders.length === 0 && !loading ? (
-        <Alert severity="info">No purchase orders found</Alert>
-      ) : (
-        <>
-          <Box sx={{ height: appliedFilters.length > 0 ? '80vh' : '80vh', width: '100%' }}>
-            <DataGrid
-              rows={displayedRows}
-              columns={gridColumns}
-              rowCount={
-                selectedTab === 1
-                  ? displayedRows.length
-                  : pinFilter === 'pinned'
-                    ? pinnedPOsRowCount
-                    : rowCount
-              }
-              rowHeight={35}
-              // getRowClassName={(params) => {
-              //   // console.log('params: ', params);
-              //   return params.indexRelativeToCurrentPage % 2 === 0 ? 'light_row' : 'dark_row';
-              // }}
-              pagination
-              paginationMode="server"
-              // rowCountMode="server"
-              pageSizeOptions={[10, 25, 50, 60, 100]}
-              loading={loading}
-              onPaginationModelChange={handlePaginationModelChange}
-              paginationModel={{ page, pageSize }}
-              getRowId={(row) => row.id}
-              disableRowSelectionOnClick
-              // hideFooterSelectedRowCount
-              sortingMode={pinFilter === 'pinned' ? 'client' : 'server'}
-              onSortModelChange={(model) => {
-                console.log('sort model: ', model);
-                console.log('sort model state: ', sortModel);
-                if (pinFilter === 'all') {
-                  setSortModel({
-                    sort_by: model[0]?.field,
-                    // sort_order: (sortModel.sort_order == 'asc' || sortModel.sort_order == 'desc') ? sortModel.sort_order : 'asc',
-                    sort_order: sortModel.sort_order == 'asc' ? 'desc' : 'asc',
-                  });
-                  // setSortBy(model[0]?.field || '');
-                  // setSortOrder(model[0]?.sort as 'asc' | 'desc' || 'asc');
-                  setPage(0);
-                }
-              }}
-              onRowClick={(params) => handlePOClick(params.row as PurchaseOrder)}
-              sx={{
-                '& .MuiDataGrid-row': {
-                  cursor: 'pointer',
-                  '&:hover': {
-                    backgroundColor: '#F8EFE7',
-                  },
-                  fontSize: '0.8rem',
-                },
+      <Box sx={{ height: appliedFilters.length > 0 ? '80vh' : '80vh', width: '100%' }}>
+        <DataGrid
+          rows={currentRows}
+          columns={currentColumns}
+          rowCount={
+            isLineItemTab
+              ? currentRows.length
+              : selectedTab === 1
+                ? displayedRows.length
+                : currentPinFilter === 'pinned'
+                  ? pinnedPOsRowCount
+                  : rowCount
+          }
+          rowHeight={35}
+          pagination
+          paginationMode={isLineItemTab ? 'client' : 'server'}
+          pageSizeOptions={[10, 25, 50, 60, 100]}
+          loading={loading}
+          onPaginationModelChange={handlePaginationModelChange}
+          paginationModel={{ page, pageSize }}
+          getRowId={(row) => row.id}
+          disableRowSelectionOnClick
+          sortingMode={isLineItemTab || currentPinFilter === 'pinned' ? 'client' : 'server'}
+          onSortModelChange={(model) => {
+            console.log('sort model: ', model);
 
-                '& .MuiDataGrid-toolbarContainer': {
-                  justifyContent: 'flex-end',
-                  width: '100%',
-                },
-                
-              }}
-              slots={{
-                toolbar: () => (
-                  <>
-                    <POFilters
-                      searchQuery={searchInput}
-                      onSearchChange={handleSearchChange}
-                      statusFilter={statusFilter}
-                      onStatusChange={(value) => {
-                        setStatusFilter(value);
-                        setPage(0);
-                      }}
-                      sortOrder={sortModel.sort_order}
-                      viewMode={viewMode}
-                      onViewModeChange={setViewMode}
-                      onFiltersClick={() => setShowAdvancedFilters(true)}
-                      pinFilter={pinFilter}
-                      onPinFilterChange={(value) => {
-                        console.log('Pin filter list:', pinnedPOs);
-                        setPinFilter(value);
-                        console.log('Pin filter changed to:', value);
-                        setPage(0);
-                      }}
-                      pinnedCount={pinnedPOIds.length}
-                      selectedTab={selectedTab}
-                      onTabChange={setSelectedTab}
-                    />
-                    <Box height={appliedFilters.length > 0 ? '4vh' : '0vh'} sx={{ mb: 0, pl: 1 }}>
-                      {appliedFilters.length > 0 && (
-                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                          {appliedFilters.map((filter) => (
-                            <Chip
-                              key={filter.key}
-                              label={filter.label}
-                              size="small"
-                              color="primary"
-                              variant="outlined"
-                              onDelete={() => {
-                                const updated = { ...advanceFilters };
-                                delete updated[filter.key];
-                                setAdvancefilters(updated);
-                                setAdvanceTempfilters(updated);
-                              }}
-                            />
-                          ))}
+            if (isLineItemTab) {
+              return;
+            }
 
-                          <Chip
-                            size="small"
-                            label="Clear All"
-                            color="error"
-                            onClick={() => {
-                              setAdvancefilters({});
-                              setAdvanceTempfilters({});
-                            }}
-                          />
-                        </Stack>
-                      )}
-                    </Box>
-                  </>
-                ),
-              }}
-            />
-          </Box>
-        </>
-      )}
+            if (currentPinFilter === 'pinned') {
+              return;
+            }
+
+            setSortModel({
+              sort_by: model[0]?.field,
+              sort_order: (model[0]?.sort as 'asc' | 'desc') || 'asc',
+            });
+
+            setPage(0);
+          }}
+          onRowClick={(params) => {
+            if (!isLineItemTab) {
+              handleGridRowClick(params.row);
+            }
+          }}
+          localeText={{
+            noRowsLabel:
+              isLineItemTab
+                ? 'No matching line items found'
+                : selectedSites.length === 0
+                  ? 'No sites selected'
+                  : 'No purchase orders found',
+          }}
+          sx={{
+            '& .MuiDataGrid-row': {
+              cursor: isLineItemTab ? 'default' : 'pointer',
+              '&:hover': {
+                backgroundColor: '#F8EFE7',
+              },
+              fontSize: '0.8rem',
+            },
+
+            '& .MuiDataGrid-toolbarContainer': {
+              justifyContent: 'flex-end',
+              width: '100%',
+            },
+
+            '& .changed-cell': {
+              color: theme.palette.primary.light,
+              fontWeight: 700,
+            },
+          }}
+          slots={{
+            toolbar: ToolbarComponent,
+          }}
+        />
+      </Box>
       {/* Advanced Filters Dialog */}
       <Dialog
         open={showAdvancedFilters}

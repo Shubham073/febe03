@@ -72,6 +72,11 @@ export interface LineItem {
   updated_material_no?: string;
   updated_description?: string;
   updated_net_value?: number;
+  supplier_confirmation_date?: string;
+  recommendation?: string;
+  exception_type?: string;
+  mrp_action_required?: boolean;
+  concession?: string;
   documents?: string[];
   line_status?: string;
   default_expanded?: boolean;
@@ -208,6 +213,7 @@ export interface POFilters {
 
   supplier_email?: string;
   site?: string;
+  sites?: string[];
 
   total_value_from?: number;
   total_value_to?: number;
@@ -223,6 +229,8 @@ export interface POFilters {
 
   mrp_exceptions?: string;
   pinned_po_list?: string[];
+  tab_mode?: 'ready_to_review' | 'mrp_exception';
+  include_line_items_only?: boolean;
 }
 
 export interface AdvanceFilters {
@@ -292,4 +300,9 @@ export interface DelegationListResponse {
   page_size: number;
   total: number;
   data: Delegation[];
+}
+
+
+export interface AIChatResponse {
+  output: string;
 }

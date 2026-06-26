@@ -90,8 +90,15 @@ const PurchaseOrderDetails: React.FC = () => {
 
   const reloadHistory = useCallback(async () => {
     if (!id) return;
-    const rows = (await purchaseOrderService.getPOHistory(id)) as HistoryRow[];
-    setHistoryRows(rows || []);
+    const rows = ((await purchaseOrderService.getPOHistory(id)) as HistoryRow[]) || [];
+    const sortedRows = [...rows].sort((a, b) => {
+      const aTime = new Date(a.created_at || a.timestamp || '').getTime();
+      const bTime = new Date(b.created_at || b.timestamp || '').getTime();
+      const safeATime = Number.isNaN(aTime) ? 0 : aTime;
+      const safeBTime = Number.isNaN(bTime) ? 0 : bTime;
+      return safeBTime - safeATime;
+    });
+    setHistoryRows(sortedRows);
   }, [id]);
 
   const reloadDocuments = useCallback(async () => {
@@ -100,25 +107,75 @@ const PurchaseOrderDetails: React.FC = () => {
     setDocumentsRows(rows || []);
   }, [id]);
 
-  const reloadAll = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      await Promise.all([reloadPo(), reloadHistory(), reloadDocuments()]);
-      if (user?.id) {
-        const pinned = await userService.getLinePinnedRows(user.id);
-        setPinnedLineIds(pinned);
+  useEffect(() => {
+    const loadAll = async () => {
+      if (!id) return;
+
+      setLoading(true);
+      setError(null);
+      try {
+        await Promise.all([reloadPo(), reloadHistory(), reloadDocuments()]);
+        if (user?.id) {
+          const pinned = await userService.getLinePinnedRows(user.id);
+          setPinnedLineIds(pinned);
+        }
+      } catch (err: any) {
+        setError(err?.response?.data?.detail || 'Failed to load PO details');
+      } finally {
+        setLoading(false);
       }
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Failed to load PO details');
-    } finally {
-      setLoading(false);
-    }
-  }, [reloadPo, reloadHistory, reloadDocuments, user?.id]);
+    };
+
+    void loadAll();
+  }, [id, reloadPo, reloadHistory, reloadDocuments, user?.id]);
 
   useEffect(() => {
-    void reloadAll();
-  }, [reloadAll]);
+    const publishChatContext = async () => {
+      if (!po || !user?.email) {
+        return;
+      }
+
+      const fromEmail = user.email;
+      const fromName = user.name || user.email;
+
+      let toEmail = po.supplier_email || '';
+      let toName = po.supplier_name || 'Supplier';
+
+      if (supplier) {
+        const specialists = await userService.getUsersByRole('PROCUREMENT_SPECIALIST');
+        const owner = specialists.find((item) => item.id === po.procurement_specialist_id);
+
+        if (!owner?.email) {
+          return;
+        }
+
+        toEmail = owner.email;
+        toName = owner.name;
+      }
+
+      if (!toEmail) {
+        return;
+      }
+
+      window.dispatchEvent(
+        new CustomEvent('chat-context', {
+          detail: {
+            poNumber: po.po_number,
+            fromEmail,
+            fromName,
+            toEmail,
+            toName,
+          },
+        })
+      );
+    };
+
+    void publishChatContext();
+
+    return () => {
+      window.dispatchEvent(new Event('clear-chat-context'));
+    };
+  }, [po?.id, po?.po_number, po?.procurement_specialist_id, po?.supplier_email, po?.supplier_name, supplier, user?.email, user?.name]);
 
   const lineItems = po?.line_items || [];
   const hasSelectedSupplierLineRows = selectedLineIds.length > 0;
